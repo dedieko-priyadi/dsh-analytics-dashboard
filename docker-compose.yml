@@ -1,0 +1,15 @@
+services:
+  dsh-analytics:
+    build: .
+    container_name: dsh-analytics
+    restart: unless-stopped
+    ports:
+      - "8541:8541"
+    volumes:
+      - /home/dedieko/collection-engine/data/charts.db:/app/charts.db:ro
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.16.20.0/24   # /24 (aturan wajib)
