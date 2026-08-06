@@ -1,6 +1,6 @@
 """DSH Analytics Dashboard — data perilaku & layanan DSH UGM.
-Data: charts.db (r9_dsh_* tables dari collector collect_dsh.py).
-Tab: Overview, Tren & Topik, Kualitas AI, Fasilitas, Pengguna."""
+Data: charts.db (r9_dsh_* dari collect_dsh.py — sumber BENAR: ugm_dsh).
+Tab: Overview, Tren & Topik, Kualitas AI, Knowledge & Feedback, Fasilitas, Pengguna."""
 import streamlit as st, sqlite3, pandas as pd, plotly.express as px
 
 st.set_page_config(page_title="DSH Analytics UGM", layout="wide")
@@ -10,29 +10,35 @@ DB = "/app/charts.db"
 def load():
     con = sqlite3.connect(DB)
     ai = pd.read_sql("SELECT * FROM r9_dsh_ai_logs", con)
-    sl = pd.read_sql("SELECT * FROM r9_dsh_search_log", con)
+    sh = pd.read_sql("SELECT * FROM r9_dsh_search_history", con)
+    qa = pd.read_sql("SELECT * FROM r9_dsh_qa_knowledge", con)
+    fb = pd.read_sql("SELECT * FROM r9_dsh_ai_feedback", con)
+    conv = pd.read_sql("SELECT * FROM r9_dsh_ai_conversations", con)
+    an = pd.read_sql("SELECT * FROM r9_dsh_ai_analytics", con)
+    pop = pd.read_sql("SELECT * FROM r9_dsh_popular", con)
+    tr = pd.read_sql("SELECT * FROM r9_dsh_entity_trends", con)
     fac = pd.read_sql("SELECT * FROM r9_dsh_facilities", con)
-    kb = pd.read_sql("SELECT * FROM r9_dsh_kb_entities", con)
     con.close()
-    return ai, sl, fac, kb
+    return ai, sh, qa, fb, conv, an, pop, tr, fac
 
-ai, sl, fac, kb = load()
+ai, sh, qa, fb, conv, an, pop, tr, fac = load()
 ai["created_at"] = pd.to_datetime(ai["created_at"], errors="coerce")
-sl["created_time"] = pd.to_datetime(sl["created_time"], errors="coerce")
+sh["search_timestamp"] = pd.to_datetime(sh["search_timestamp"], errors="coerce")
 
 st.title("🌐 DSH Analytics — Digital Services Hub UGM")
 
-tab = st.sidebar.radio("Menu", ["Overview", "Tren & Topik", "Kualitas AI", "Fasilitas", "Pengguna"])
-st.sidebar.caption(f"AI logs: {len(ai):,} · Search: {len(sl):,} · Fasilitas: {len(fac):,}")
+tab = st.sidebar.radio("Menu", ["Overview", "Tren & Topik", "Kualitas AI", "Knowledge & Feedback", "Fasilitas", "Pengguna"])
+st.sidebar.caption(f"AI: {len(ai):,} · Search: {len(sh):,} · Q&A: {len(qa):,} · Index: {tr['total_items_created'].sum():,}")
 
 # ═══════════ OVERVIEW ═══════════
 if tab == "Overview":
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Query Chatbot (AI)", f"{len(ai):,}")
-    c2.metric("Query Generator", f"{len(sl):,}")
-    c3.metric("Fasilitas", f"{len(fac):,}")
-    c4.metric("Unik Pengguna", f"{ai['ip_hash'].nunique():,}")
-    c5.metric("Total Token AI", f"{ai['tokens_used'].sum():,}")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    c1.metric("Query Chatbot", f"{len(ai):,}")
+    c2.metric("Pencarian Web", f"{len(sh):,}")
+    c3.metric("Q&A Knowledge", f"{len(qa):,}")
+    c4.metric("Feedback", f"{len(fb):,}")
+    c5.metric("Unik Pengguna", f"{ai['ip_hash'].nunique():,}")
+    c6.metric("Token AI", f"{ai['tokens_used'].sum():,}")
 
     col_l, col_r = st.columns(2)
     with col_l:
@@ -46,8 +52,10 @@ if tab == "Overview":
         vc.columns = ["Model", "Jumlah"]
         st.plotly_chart(px.pie(vc, names="Model", values="Jumlah"), use_container_width=True)
 
-    st.subheader("Knowledge Base Coverage")
-    st.dataframe(kb.rename(columns={"entity_type": "Tipe", "total": "Jumlah"}), use_container_width=True, hide_index=True)
+    st.subheader("Knowledge Base — Entity Trends (search_index)")
+    agg = tr.groupby("entity_type")[["total_items_created", "clicked_items_30d"]].sum().reset_index()
+    agg.columns = ["Entity", "Total", "Klik 30d"]
+    st.dataframe(agg.sort_values("Total", ascending=False), use_container_width=True, hide_index=True)
 
 # ═══════════ TREN & TOPIK ═══════════
 elif tab == "Tren & Topik":
@@ -59,8 +67,8 @@ elif tab == "Tren & Topik":
         daily.columns = ["Bulan", "Jumlah"]
         st.plotly_chart(px.line(daily, x="Bulan", y="Jumlah", markers=True), use_container_width=True)
     with col_r:
-        st.markdown("**Query Generator per Bulan**")
-        d2 = sl.set_index("created_time").resample("ME").size().reset_index()
+        st.markdown("**Pencarian Web per Bulan**")
+        d2 = sh.set_index("search_timestamp").resample("ME").size().reset_index()
         d2.columns = ["Bulan", "Jumlah"]
         st.plotly_chart(px.line(d2, x="Bulan", y="Jumlah", markers=True), use_container_width=True)
 
@@ -69,26 +77,62 @@ elif tab == "Tren & Topik":
     top.columns = ["Query", "Jumlah"]
     st.dataframe(top, use_container_width=True, hide_index=True)
 
+    st.subheader("Query Populer (search_trends)")
+    st.dataframe(pop.sort_values("search_count", ascending=False).head(15)
+                 [["query", "search_count", "avg_results", "search_date"]]
+                 .rename(columns={"query": "Query", "search_count": "Jumlah", "avg_results": "Rata2 Hasil", "search_date": "Tanggal"}),
+                 use_container_width=True, hide_index=True)
+
 # ═══════════ KUALITAS AI ═══════════
 elif tab == "Kualitas AI":
-    st.subheader("⚙️ Kualitas AI")
+    st.subheader("⚙️ Kualitas AI (ai_search_analytics — agregat harian)")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Error", f"{len(ai[ai['error_msg'] != '0']):,}")
-    c2.metric("Cache Hit", f"{ai['cache_hit'].sum():,} ({ai['cache_hit'].mean()*100:.0f}%)")
-    c3.metric("Rata2 Latency", f"{ai['latency_ms'].mean():.0f} ms")
-    c4.metric("Rata2 Token/Query", f"{ai['tokens_used'].mean():.0f}")
+    c1.metric("Total Request", f"{an['total_requests'].sum():,}")
+    c2.metric("Error Rate", f"{an['error_rate_pct'].mean():.1f}%")
+    c3.metric("Avg Latency", f"{an['avg_latency_ms'].mean():.0f} ms")
+    c4.metric("Total Token", f"{an['total_tokens'].sum():,}")
 
     col_l, col_r = st.columns(2)
     with col_l:
-        st.markdown("**Latency per Bulan**")
-        lat = ai.set_index("created_at").resample("ME")["latency_ms"].mean().reset_index()
-        lat.columns = ["Bulan", "Latency (ms)"]
-        st.plotly_chart(px.line(lat, x="Bulan", y="Latency (ms)", markers=True), use_container_width=True)
+        st.markdown("**Request per Hari**")
+        a2 = an.groupby("search_date")["total_requests"].sum().reset_index()
+        st.plotly_chart(px.line(a2, x="search_date", y="total_requests", markers=True), use_container_width=True)
     with col_r:
-        st.markdown("**Token per Bulan (biaya)**")
-        tok = ai.set_index("created_at").resample("ME")["tokens_used"].sum().reset_index()
-        tok.columns = ["Bulan", "Token"]
-        st.plotly_chart(px.line(tok, x="Bulan", y="Token", markers=True), use_container_width=True)
+        st.markdown("**Token per Hari**")
+        t2 = an.groupby("search_date")["total_tokens"].sum().reset_index()
+        st.plotly_chart(px.line(t2, x="search_date", y="total_tokens", markers=True), use_container_width=True)
+
+    st.subheader("Detail per Hari-Action")
+    st.dataframe(an.sort_values("search_date", ascending=False), use_container_width=True, hide_index=True)
+
+# ═══════════ KNOWLEDGE & FEEDBACK ═══════════
+elif tab == "Knowledge & Feedback":
+    st.subheader("🧠 Knowledge Base & Feedback")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Q&A Knowledge", f"{len(qa):,}")
+    c2.metric("Feedback", f"{len(fb):,}")
+    c3.metric("Total Use (KB)", f"{qa['use_count'].sum():,}")
+    c4.metric("Perc. Approved", f"{qa['is_approved'].mean()*100:.0f}%")
+
+    st.subheader("Top 15 Q&A Paling Dipakai")
+    top = qa.nlargest(15, "use_count")[["query_original", "use_count", "positive_feedback", "negative_feedback", "quality_score"]]
+    top.columns = ["Pertanyaan", "Dipakai", "Positif", "Negatif", "Skor"]
+    st.dataframe(top, use_container_width=True, hide_index=True)
+
+    st.subheader("Feedback Pengguna (rating)")
+    if not fb.empty:
+        vc = fb["rating"].value_counts().sort_index().reset_index()
+        vc.columns = ["Rating", "Jumlah"]
+        st.plotly_chart(px.bar(vc, x="Rating", y="Jumlah", color="Rating"), use_container_width=True)
+        fb_txt = fb[fb["feedback_text"].notna() & (fb["feedback_text"] != "")][["query", "rating", "feedback_text"]].head(10)
+        if not fb_txt.empty:
+            st.dataframe(fb_txt, use_container_width=True, hide_index=True)
+
+    st.subheader("Percakapan (ai_conversations)")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total Percakapan", f"{len(conv):,}")
+    c2.metric("Rata2 Turn", f"{conv['turn_count'].mean():.1f}" if not conv.empty else "-")
+    c3.metric("Kontribusi KB", f"{conv['contributed_kb'].sum():,}")
 
 # ═══════════ FASILITAS ═══════════
 elif tab == "Fasilitas":
@@ -102,7 +146,7 @@ elif tab == "Fasilitas":
     st.plotly_chart(px.bar(vc, x="Jumlah", y="Kategori", orientation="h", color="Jumlah"), use_container_width=True)
 
     st.subheader("Fasilitas dengan Koordinat (map)")
-    map_data = fac.dropna(subset=["latitude", "longitude"])
+    map_data = fac.dropna(subset=["latitude", "longitude"]).copy()
     map_data["lat"] = pd.to_numeric(map_data["latitude"], errors="coerce")
     map_data["lon"] = pd.to_numeric(map_data["longitude"], errors="coerce")
     map_data = map_data.dropna(subset=["lat", "lon"])
@@ -118,7 +162,13 @@ else:
     c2.metric("Sesi", f"{ai['session_id'].nunique():,}")
     c3.metric("Query/Sesi", f"{len(ai)/max(ai['session_id'].nunique(),1):.1f}")
 
-    st.subheader("Browser (User-Agent)")
+    st.subheader("Mode Pencarian Web (search_history)")
+    if not sh.empty:
+        vc = sh["search_mode"].value_counts().reset_index()
+        vc.columns = ["Mode", "Jumlah"]
+        st.plotly_chart(px.bar(vc, x="Mode", y="Jumlah", color="Mode"), use_container_width=True)
+
+    st.subheader("Browser (User-Agent AI)")
     def browser(ua):
         ua = (ua or "").lower()
         if "chrome" in ua and "edg" not in ua: return "Chrome"
@@ -132,12 +182,4 @@ else:
     br.columns = ["Browser", "Jumlah"]
     st.plotly_chart(px.bar(br, x="Browser", y="Jumlah", color="Browser"), use_container_width=True)
 
-    st.subheader("Pengirim Generator (email domain)")
-    if "email" in sl.columns and len(sl):
-        sl2 = sl[sl["email"].fillna("") != ""].copy()
-        sl2["domain"] = sl2["email"].map(lambda e: str(e).split("@")[-1] if "@" in str(e) else "?")
-        dom = sl2["domain"].value_counts().head(10).reset_index()
-        dom.columns = ["Domain", "Jumlah"]
-        st.dataframe(dom, use_container_width=True, hide_index=True)
-
-st.caption("Data: charts.db (collector collect_dsh.py · cron harian 04:30)")
+st.caption("Data: charts.db r9_dsh_* (collect_dsh.py — sumber ugm_dsh /var/www/html/search/search&dsh · cron harian 04:30)")

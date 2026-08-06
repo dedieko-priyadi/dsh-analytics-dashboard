@@ -1,41 +1,49 @@
 # DSH Analytics Dashboard
 
-Streamlit dashboard untuk analisis Digital Services Hub UGM (search.ugm.ac.id) — perilaku pengguna, kualitas AI, fasilitas, dan knowledge base. Data: `charts.db` (collection engine), di-populate oleh `collect_dsh.py`.
+Streamlit dashboard untuk analisis Digital Services Hub UGM (search.ugm.ac.id) — perilaku pengguna, kualitas AI, knowledge base, fasilitas. Data: `charts.db` (collection engine), di-populate oleh `collect_dsh.py` dari **database `ugm_dsh`** (sumber benar).
 
 ## URL
 - **Public**: https://nuc-nuc7i5bnh-1.tail758353.ts.net/dsh-analytics/
 - **Local**: http://127.0.0.1:8541/dsh-analytics/
 
+## ⚠️ Pelajaran Penting: Sumber Database yang BENAR (2026-08-07)
+
+Koreksi setelah RCA: **`store_ai.search_log` (9.158) BUKAN data DSH** — itu tabel aplikasi lain. Aplikasi DSH (`/var/www/html/search/search&dsh/`, config/db.php) menulis ke **`ugm_dsh`**:
+- `ugm_dsh.search_history` (3.812) — riwayat pencarian web
+- `ugm_dsh.ai_search_logs` (2.362) — log chatbot RAG
+- `ugm_dsh.ai_qa_knowledge` (338) — Q&A knowledge base
+- `ugm_dsh.ai_feedback` (41) — rating pengguna
+- `ugm_dsh.ai_conversations` (229) — percakapan multi-turn
+- `ugm_dsh.ai_search_analytics` (48) — agregat harian (request/token/latency/error)
+- `ugm_dsh.popular_searches` (40) + `search_trends` (135) — query populer + analitik entity
+- `ugm_dsh.search_index` (89.774) — knowledge base pencarian
+
+**Pitfall**: `search_trends` = analitik per **entity type** (entity_type, total_items_created, clicked_items_30d), BUKAN query populer. Query populer ada di `popular_searches`.
+
 ## Arsitektur
 ```
-MySQL production (10.17.104.219, store_ai + ugm_dsh)
+MySQL production (10.17.104.219, ugm_dsh)
   → SSH tunnel 127.0.0.1:13307 (systemd dsh-tunnel)
-  → collect_dsh.py (cron harian 04:30)
+  → collect_dsh.py (cron harian 04:30, job 185ce216edec)
   → charts.db (r9_dsh_* tables)
   → dsh-analytics (Streamlit :8541, subpath /dsh-analytics/)
 ```
 
-## Data (charts.db)
-| Tabel | Isi | Jumlah |
-|---|---|---|
-| `r9_dsh_search_log` | Query AI generator (BERITAUGM dll) + email pengirim | 9.158 |
-| `r9_dsh_ai_logs` | Query chatbot RAG: action, model, tokens, latency, cache, ip_hash, session | 2.362 |
-| `r9_dsh_facilities` | Fasilitas kampus + kategori + koordinat | 404 |
-| `r9_dsh_kb_entities` | Coverage knowledge base per tipe (publication 68K, patent 9.2K...) | 10 |
-
-## 5 Tab
-1. **Overview** — KPI, action/model distribution, KB coverage
-2. **Tren & Topik** — query per bulan (chatbot + generator), top 15 query
-3. **Kualitas AI** — error, cache hit, latency, token per bulan
-4. **Fasilitas** — kategori, map koordinat
-5. **Pengguna** — unik IP, sesi, browser, email domain
+## 6 Tab
+1. **Overview** — KPI, action/model, entity trends (search_index)
+2. **Tren & Topik** — query per bulan, top query chatbot, query populer
+3. **Kualitas AI** — agregat harian: request, token, latency, error rate
+4. **Knowledge & Feedback** — Q&A KB top, rating pengguna, feedback negatif, percakapan
+5. **Fasilitas** — kategori, map koordinat
+6. **Pengguna** — unik IP, sesi, mode pencarian, browser
 
 ## Insight terverifikasi (2026-08-07)
-- 2.362 query chatbot (Mar–Agt 2026), 1.147.769 token total, 0 error
-- 9.158 query generator; 2.444 email @ugm.ac.id (1.467 ugm.ac.id + 977 mail.ugm.ac.id)
-- Top kebutuhan: rektor UGM (26), hantavirus (22), peraturan rektor (18), beasiswa (16), red tape (15)
-- 404 fasilitas, 100% punya koordinat (siap map)
-- Cache hit 459/2.362 (19%) — potensi penghematan token
+- 2.362 query chatbot (Mar–Agt 2026), 1.147.769 token, model qwen2.5:0.5b (65%) + gpt-4o-mini (32%)
+- 3.812 pencarian web, mode fulltext dominan (3.192)
+- Q&A KB: "penelitian hantavirus" paling dipakai (17×); total use 459
+- Feedback: 36 positif / 5 negatif — negatif: "jawaban tidak sesuai", "informasi rancu", "text terputus"
+- Knowledge base: publication 68.756, patent 9.246, people 5.412, news 5.018 (90.500 total)
+- Entity clicks 30d: service 20, news 11, publication 8
 
 ## Deploy
 ```bash
