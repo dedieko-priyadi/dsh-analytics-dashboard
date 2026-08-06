@@ -18,16 +18,22 @@ def load():
     pop = pd.read_sql("SELECT * FROM r9_dsh_popular", con)
     tr = pd.read_sql("SELECT * FROM r9_dsh_entity_trends", con)
     fac = pd.read_sql("SELECT * FROM r9_dsh_facilities", con)
+    # EA tables (cross-domain)
+    try:
+        ea_el = pd.read_sql("SELECT Object_ID, Name, Stereotype, Status, Package_ID FROM r9_ea_elements", con)
+        ea_pkg = pd.read_sql("SELECT Package_ID, Name FROM r9_ea_packages", con)
+    except Exception:
+        ea_el, ea_pkg = pd.DataFrame(), pd.DataFrame()
     con.close()
-    return ai, sh, qa, fb, conv, an, pop, tr, fac
+    return ai, sh, qa, fb, conv, an, pop, tr, fac, ea_el, ea_pkg
 
-ai, sh, qa, fb, conv, an, pop, tr, fac = load()
+ai, sh, qa, fb, conv, an, pop, tr, fac, ea_el, ea_pkg = load()
 ai["created_at"] = pd.to_datetime(ai["created_at"], errors="coerce")
 sh["search_timestamp"] = pd.to_datetime(sh["search_timestamp"], errors="coerce")
 
 st.title("🌐 DSH Analytics — Digital Services Hub UGM")
 
-tab = st.sidebar.radio("Menu", ["Overview", "Tren & Topik", "Kualitas AI", "Knowledge & Feedback", "Fasilitas", "Pengguna"])
+tab = st.sidebar.radio("Menu", ["Overview", "Tren & Topik", "Kualitas AI", "Knowledge & Feedback", "Fasilitas", "Pengguna", "Cross-Domain EA"])
 st.sidebar.caption(f"AI: {len(ai):,} · Search: {len(sh):,} · Q&A: {len(qa):,} · Index: {tr['total_items_created'].sum():,}")
 
 # ═══════════ OVERVIEW ═══════════
@@ -155,7 +161,7 @@ elif tab == "Fasilitas":
     st.caption(f"{len(map_data)}/{len(fac)} punya koordinat")
 
 # ═══════════ PENGGUNA ═══════════
-else:
+elif tab == "Pengguna":
     st.subheader("👥 Pengguna")
     c1, c2, c3 = st.columns(3)
     c1.metric("Unik IP (AI)", f"{ai['ip_hash'].nunique():,}")
@@ -181,5 +187,50 @@ else:
     br = ai["browser"].value_counts().reset_index()
     br.columns = ["Browser", "Jumlah"]
     st.plotly_chart(px.bar(br, x="Browser", y="Jumlah", color="Browser"), use_container_width=True)
+
+# ═══════════ CROSS-DOMAIN EA ═══════════
+elif tab == "Cross-Domain EA":
+    st.subheader("🔗 Cross-Domain — EA (blueprint) × DSH (realita)")
+    if ea_el.empty:
+        st.warning("Data EA tidak tersedia di charts.db — jalankan collect_ea_ugm.py dulu")
+    else:
+        # 1. Layanan EA vs entity service DSH
+        c1, c2, c3 = st.columns(3)
+        ea_lay = ea_el[ea_el["Stereotype"].isin(["Layanan", "ApplicationService", "ApplicationComponent", "ServiceCategory"])]
+        dsh_serv = tr[tr["entity_type"] == "service"]["total_items_created"].sum() if not tr.empty else 0
+        c1.metric("EA: Layanan/Aplikasi", f"{len(ea_lay):,}")
+        c2.metric("DSH: Entity Service", f"{int(dsh_serv):,}")
+        c3.metric("Query 'layanan' DSH", f"{len(sh[sh['query'].str.contains('layanan|simaster|portal', case=False, na=False)]):,}")
+
+        # 2. EA Layanan per package (unit)
+        st.subheader("EA: Layanan per Unit (package)")
+        if not ea_lay.empty and not ea_pkg.empty:
+            pkg_name = ea_pkg.rename(columns={"Name": "PkgName"})
+            merged = ea_lay.merge(pkg_name, on="Package_ID", how="left")
+            top = merged["PkgName"].fillna("(tanpa package)").value_counts().head(15).reset_index()
+            top.columns = ["Unit", "Jumlah Layanan"]
+            st.plotly_chart(px.bar(top, x="Jumlah Layanan", y="Unit", orientation="h", color="Jumlah Layanan"), use_container_width=True)
+
+        # 3. DSH entity clicks vs EA (kebutuhan publik)
+        st.subheader("DSH: Entity Diklik 30d (kebutuhan publik)")
+        if not tr.empty:
+            agg = tr.groupby("entity_type")[["total_items_created", "clicked_items_30d"]].sum().reset_index()
+            agg.columns = ["Entity", "Total", "Klik 30d"]
+            agg["rasio_klik"] = (agg["Klik 30d"] / agg["Total"].replace(0, 1) * 100).round(1)
+            st.dataframe(agg.sort_values("Klik 30d", ascending=False), use_container_width=True, hide_index=True)
+
+        # 4. Insight gap
+        st.subheader("💡 Insight Gap (otomatis)")
+        if not tr.empty:
+            agg = tr.groupby("entity_type")[["total_items_created", "clicked_items_30d"]].sum().reset_index()
+            agg = agg[agg["clicked_items_30d"] > 0]
+            if not agg.empty:
+                top_ent = agg.sort_values("clicked_items_30d", ascending=False).iloc[0]
+                ent_name = str(top_ent.get("entity_type", "?"))
+                klik = int(top_ent.get("clicked_items_30d", 0) or 0)
+                total = int(top_ent.get("total_items_created", 0) or 0)
+                st.info(f"Entity **{ent_name}** paling diklik publik (30d: {klik} klik dari {total} item) — kebutuhan publik tertinggi, pastikan proses EA terkait sudah digital.")
+            gaps = sh[sh["query"].str.contains("layanan|simaster|portal", case=False, na=False)]
+            st.write(f"**{len(gaps):,} pencarian layanan** di DSH → bandingkan dengan **{len(ea_lay):,} layanan/aplikasi** di EA: proses mana yang dicari publik tapi belum ada di arsitektur?")
 
 st.caption("Data: charts.db r9_dsh_* (collect_dsh.py — sumber ugm_dsh /var/www/html/search/search&dsh · cron harian 04:30)")
